@@ -1,6 +1,5 @@
-using Base.Test, HDF5, JLD
 using StateSpaceRoutines
-using QuantEcon: solve_discrete_lyapunov
+using Test, HDF5, JLD2, FileIO, LinearAlgebra, Statistics, PDMats, Distributions, Random
 
 my_tests = [
             "kalman_filter"
