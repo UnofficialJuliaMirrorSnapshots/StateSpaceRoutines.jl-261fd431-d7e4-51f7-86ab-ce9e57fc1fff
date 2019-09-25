@@ -1,7 +1,7 @@
 """
 ```
 mutation!(Φ, Ψ, QQ, det_HH, inv_HH, φ_new, y_t, s_t, s_t1, ϵ_t, c, n_mh_steps;
-    parallel = false)
+    parallel = false, poolmodel = false)
 ```
 
 Mutate particles by taking Metropolis-Hastings steps in the `ϵ_t` space. This
@@ -11,7 +11,8 @@ function mutation!(Φ::Function, Ψ::Function, QQ::Matrix{Float64},
                    det_HH::Float64, inv_HH::Matrix{Float64}, φ_new::Float64,
                    y_t::Vector{Float64}, s_t::M, s_t1::M,
                    ϵ_t::M, c::Float64, n_mh_steps::Int;
-                   parallel::Bool = false) where M<:AbstractMatrix{Float64}
+                   parallel::Bool = false,
+                   poolmodel::Bool = false) where M<:AbstractMatrix{Float64}
     # Sizes
     n_obs = size(y_t, 1)
     n_particles = size(ϵ_t, 2)
@@ -27,10 +28,20 @@ function mutation!(Φ::Function, Ψ::Function, QQ::Matrix{Float64},
     scaled_inv_HH = inv_HH*φ_new
 
     # Take Metropolis-Hastings steps
-    @sync @distributed for i in 1:n_particles
-        s_t[:,i], ϵ_t[:,i], accept_vec[i] =
-            mh_steps(Φ, Ψ, dist_ϵ, y_t, s_t1[:,i], s_t[:,i], ϵ_t[:,i],
-                    scaled_det_HH, scaled_inv_HH, n_mh_steps)
+    if parallel
+        @sync @distributed for i in 1:n_particles
+            s_t[:,i], ϵ_t[:,i], accept_vec[i] =
+                mh_steps(Φ, Ψ, dist_ϵ, y_t, s_t1[:,i], s_t[:,i], ϵ_t[:,i],
+                         scaled_det_HH, scaled_inv_HH, n_mh_steps;
+                         poolmodel = poolmodel)
+        end
+    else
+         for i in 1:n_particles
+            s_t[:,i], ϵ_t[:,i], accept_vec[i] =
+                mh_steps(Φ, Ψ, dist_ϵ, y_t, s_t1[:,i], s_t[:,i], ϵ_t[:,i],
+                         scaled_det_HH, scaled_inv_HH, n_mh_steps;
+                         poolmodel = poolmodel)
+        end
     end
 
     # Calculate and return acceptance rate
@@ -40,7 +51,8 @@ end
 
 """
 ```
-mh_steps(Φ, Ψ, dist_ϵ, y_t, s_t1, s_t, ϵ_t, scaled_det_HH, scaled_inv_HH, n_mh_steps)
+mh_steps(Φ, Ψ, dist_ϵ, y_t, s_t1, s_t, ϵ_t, scaled_det_HH,
+    scaled_inv_HH, n_mh_steps; poolmodel = false)
 ```
 
 Take `n_mh_steps` many steps in the `ϵ_t` space for a single particle. Returns
@@ -48,11 +60,16 @@ the new `s_t`, `ϵ_t`, and the number of acceptances `accept`.
 """
 function mh_steps(Φ::Function, Ψ::Function, dist_ϵ::MvNormal, y_t::Vector{Float64},
                   s_t1::Vector{Float64}, s_t::Vector{Float64}, ϵ_t::Vector{Float64},
-                  scaled_det_HH::Float64, scaled_inv_HH::Matrix{Float64}, n_mh_steps::Int)
+                  scaled_det_HH::Float64, scaled_inv_HH::Matrix{Float64}, n_mh_steps::Int;
+                  poolmodel::Bool = false)
     accept = 0
 
     # Compute posterior at initial ϵ_t
-    post_1 = fast_mvnormal_pdf(y_t - Ψ(s_t), scaled_det_HH, scaled_inv_HH)
+    if poolmodel
+        post_1 = Ψ(s_t) # PoolModel measurement eq is the likelihood
+    else
+        post_1 = fast_mvnormal_pdf(y_t - Ψ(s_t), scaled_det_HH, scaled_inv_HH)
+    end
     post_2 = fast_mvnormal_pdf(ϵ_t)
     post   = post_1 * post_2
 
@@ -62,7 +79,8 @@ function mh_steps(Φ::Function, Ψ::Function, dist_ϵ::MvNormal, y_t::Vector{Flo
         s_new = Φ(s_t1, ϵ_new)
 
         # Calculate posterior
-        post_new_1 = fast_mvnormal_pdf(y_t - Ψ(s_new), scaled_det_HH, scaled_inv_HH)
+        post_new_1 = poolmodel ? Ψ(s_new) : fast_mvnormal_pdf(y_t - Ψ(s_new),
+                                                              scaled_det_HH, scaled_inv_HH)
         post_new_2 = fast_mvnormal_pdf(ϵ_new)
         post_new   = post_new_1 * post_new_2
 
